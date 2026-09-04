@@ -1,0 +1,113 @@
+name: Build APK from ZIP
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "*.zip"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Extract ZIP and Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find uploaded ZIP
+        id: find_zip
+        shell: bash
+        run: |
+          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "Repository-তে কোনো ZIP ফাইল পাওয়া যায়নি।"
+            exit 1
+          fi
+
+          echo "ZIP পাওয়া গেছে: $ZIP_FILE"
+          echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Android project
+        shell: bash
+        run: |
+          mkdir -p extracted-project
+          unzip -q -o "${{ steps.find_zip.outputs.zip_file }}" \
+            -d extracted-project
+
+          echo "ZIP Extract সম্পন্ন হয়েছে।"
+
+      - name: Locate Android project
+        id: android_project
+        shell: bash
+        run: |
+          SETTINGS_FILE=$(find extracted-project \
+            -type f \
+            -name "settings.gradle.kts" \
+            -not -path "*/build/*" \
+            | head -n 1)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ZIP-এর ভেতরে settings.gradle.kts পাওয়া যায়নি।"
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "app/build.gradle.kts পাওয়া যায়নি।"
+            exit 1
+          fi
+
+          echo "Android project পাওয়া গেছে: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build Debug APK
+        shell: bash
+        run: |
+          gradle \
+            --no-daemon \
+            -p "${{ steps.android_project.outputs.project_dir }}" \
+            :app:assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          APK_FILE=$(find extracted-project \
+            -type f \
+            -path "*/app/build/outputs/apk/debug/app-debug.apk" \
+            | head -n 1)
+
+          if [ -z "$APK_FILE" ]; then
+            echo "Build শেষ হলেও APK পাওয়া যায়নি।"
+            exit 1
+          fi
+
+          echo "APK তৈরি হয়েছে: $APK_FILE"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AmarHisab-debug-apk
+          path: extracted-project/**/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
